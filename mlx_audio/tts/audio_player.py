@@ -20,6 +20,7 @@ class AudioPlayer:
         self.stream: sd.OutputStream | None = None
         self.playing = False
         self.drain_event = Event()
+        self.input_closed = False
 
         self.window_sample_count = 0
         self.window_start = time.perf_counter()
@@ -41,12 +42,15 @@ class AudioPlayer:
                 else:
                     self.audio_buffer[0] = buf[to_copy:]
 
-            if not self.audio_buffer and filled < frames:
+            if self.input_closed and not self.audio_buffer and filled == 0:
                 self.drain_event.set()
                 self.playing = False
                 raise sd.CallbackStop()
 
     def start_stream(self):
+        if self.stream is not None and not self.playing:
+            self.stop_stream()
+
         print("\nStarting audio stream...")
         self.stream = sd.OutputStream(
             samplerate=self.sample_rate,
@@ -90,6 +94,9 @@ class AudioPlayer:
             self.window_start = now
 
         with self.buffer_lock:
+            if self.input_closed:
+                self.input_closed = False
+                self.drain_event.clear()
             self.audio_buffer.append(np.asarray(samples))
 
         # start playback only when we have enough buffered audio
@@ -97,16 +104,34 @@ class AudioPlayer:
         if not self.playing and self.buffered_samples() >= needed:
             self.start_stream()
 
+    def finish(self):
+        should_start = False
+
+        with self.buffer_lock:
+            self.input_closed = True
+            buffered = bool(self.audio_buffer)
+            if not buffered and not self.playing:
+                self.drain_event.set()
+                return
+
+            should_start = buffered and not self.playing
+
+        if should_start:
+            self.start_stream()
+
     def wait_for_drain(self):
         return self.drain_event.wait()
 
     def stop(self):
         if self.playing:
-            self.wait_for_drain()
-            sd.sleep(100)
+            if self.input_closed:
+                self.wait_for_drain()
+                sd.sleep(100)
 
             self.stop_stream()
             self.playing = False
+        elif self.stream is not None:
+            self.stop_stream()
 
     def flush(self):
         """Discard everything and stop playback immediately."""
@@ -115,6 +140,7 @@ class AudioPlayer:
 
         with self.buffer_lock:
             self.audio_buffer.clear()
+            self.input_closed = False
         self.stop_stream()
         self.playing = False
         self.drain_event.set()

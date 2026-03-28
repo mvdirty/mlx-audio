@@ -289,6 +289,7 @@ def generate_audio(
                 print(f"✅ Audio successfully generated and saving as: {file_name}")
 
         if play:
+            player.finish()
             player.wait_for_drain()
             player.stop()
 
